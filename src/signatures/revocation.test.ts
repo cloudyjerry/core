@@ -180,4 +180,73 @@ describe("Revocation Provider", () => {
       expect(result).toEqual(validOcspResponse);
     });
   });
+
+  describe("network bounds", () => {
+    /** Headers arrive at once; the body never finishes. */
+    const stallingFetch = (async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array([0x30]));
+          },
+        }),
+        { status: 200 },
+      )) as unknown as typeof globalThis.fetch;
+
+    it("gives up on an OCSP responder whose body stalls after headers", async () => {
+      const cert = await loadRealCert("github-0.der");
+      const issuer = await loadRealCert("github-1.der");
+      const provider = new DefaultRevocationProvider({ fetch: stallingFetch, timeout: 100 });
+      const started = Date.now();
+
+      const result = await provider.getOCSP(cert, issuer);
+
+      expect(result).toBeNull();
+      expect(Date.now() - started).toBeLessThan(2000);
+    });
+
+    it("gives up on a CRL server whose body stalls after headers", async () => {
+      const cert = await loadRealCert("amazon-0.der");
+      const provider = new DefaultRevocationProvider({ fetch: stallingFetch, timeout: 100 });
+      const started = Date.now();
+
+      const result = await provider.getCRL(cert);
+
+      expect(result).toBeNull();
+      expect(Date.now() - started).toBeLessThan(4000);
+    });
+
+    it("rejects an OCSP response larger than 1 MB", async () => {
+      const cert = await loadRealCert("github-0.der");
+      const issuer = await loadRealCert("github-1.der");
+      const validOcspResponse = await loadRealCert("github-ocsp.der");
+
+      // A valid response followed by padding: parseable, but over the cap.
+      const oversized = new Uint8Array(1024 * 1024 + 1);
+      oversized.set(validOcspResponse);
+
+      const mock = createMockFetch(
+        new Map([["http://ocsp.sectigo.com", { status: 200, body: oversized }]]),
+      );
+      const provider = new DefaultRevocationProvider({ fetch: mock.fetch });
+
+      expect(await provider.getOCSP(cert, issuer)).toBeNull();
+    });
+
+    it("rejects a CRL whose declared size is over 64 MB", async () => {
+      const cert = await loadRealCert("amazon-0.der");
+
+      // The cap is checked against Content-Length before the body is read;
+      // the streamed-size check is covered in http.test.ts.
+      const hugeCrlFetch = (async () =>
+        new Response(new Uint8Array([0x30, 0x00]), {
+          status: 200,
+          headers: { "Content-Length": String(64 * 1024 * 1024 + 1) },
+        })) as unknown as typeof globalThis.fetch;
+
+      const provider = new DefaultRevocationProvider({ fetch: hugeCrlFetch });
+
+      expect(await provider.getCRL(cert)).toBeNull();
+    });
+  });
 });

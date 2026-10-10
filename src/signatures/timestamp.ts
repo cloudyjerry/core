@@ -17,6 +17,12 @@ import {
   Sequence,
 } from "asn1js";
 
+import {
+  FetchTimeoutError,
+  fetchBytes,
+  HttpStatusError,
+  MAX_TIMESTAMP_RESPONSE_BYTES,
+} from "./http";
 import { OID_SHA256, OID_SHA384, OID_SHA512 } from "./oids";
 import type { DigestAlgorithm, TimestampAuthority } from "./types";
 import { TimestampError } from "./types";
@@ -46,7 +52,8 @@ export interface HttpTimestampAuthorityOptions {
   headers?: Record<string, string>;
 
   /**
-   * Request timeout in milliseconds.
+   * Request timeout in milliseconds, covering the whole request including
+   * reading the response body.
    * @default 30000
    */
   timeout?: number;
@@ -103,37 +110,34 @@ export class HttpTimestampAuthority implements TimestampAuthority {
     const request = this.buildTimestampRequest(digest, algorithm);
 
     try {
-      // Send request with timeout
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), this.timeout);
-
-      const response = await this.fetchFn(this.url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/timestamp-query",
-          Accept: "application/timestamp-reply",
-          ...this.headers,
+      // Send request; the timeout covers the whole request including the
+      // body read, and the body is capped at MAX_TIMESTAMP_RESPONSE_BYTES.
+      const responseData = await fetchBytes(
+        this.fetchFn,
+        this.url,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/timestamp-query",
+            Accept: "application/timestamp-reply",
+            ...this.headers,
+          },
+          body: request,
         },
-        body: request,
-        signal: controller.signal,
-      });
+        { timeout: this.timeout, maxBytes: MAX_TIMESTAMP_RESPONSE_BYTES },
+      );
 
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        throw new TimestampError(
-          `TSA request failed: HTTP ${response.status} ${response.statusText}`,
-        );
-      }
-
-      const responseData = await response.arrayBuffer();
-      return this.parseTimestampResponse(new Uint8Array(responseData));
+      return this.parseTimestampResponse(responseData);
     } catch (error) {
       if (error instanceof TimestampError) {
         throw error;
       }
 
-      if (error instanceof Error && error.name === "AbortError") {
+      if (error instanceof HttpStatusError) {
+        throw new TimestampError(`TSA request failed: HTTP ${error.status} ${error.statusText}`);
+      }
+
+      if (error instanceof FetchTimeoutError) {
         throw new TimestampError(`TSA request timed out after ${this.timeout}ms`);
       }
 

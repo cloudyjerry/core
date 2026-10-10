@@ -76,7 +76,25 @@ interface ResolvedSignOptions {
   timestampAuthority?: SignOptions["timestampAuthority"];
   longTermValidation: boolean;
   revocationProvider?: RevocationProvider;
+  fetch?: typeof globalThis.fetch;
   archivalTimestamp: boolean;
+}
+
+/**
+ * Create an LTV gatherer that uses the caller's fetch (when given) for AIA
+ * issuer fetches and for the default OCSP/CRL provider. A caller-supplied
+ * revocation provider is used as-is.
+ */
+function createLtvGatherer(
+  revocationProvider: RevocationProvider | undefined,
+  fetchFn: typeof globalThis.fetch | undefined,
+  options: { gatherTimestampLtv?: boolean } = {},
+): LtvDataGatherer {
+  return new LtvDataGatherer({
+    revocationProvider: revocationProvider ?? new DefaultRevocationProvider({ fetch: fetchFn }),
+    fetch: fetchFn,
+    gatherTimestampLtv: options.gatherTimestampLtv,
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -239,9 +257,7 @@ export class PDFSignature {
       // The VRI key is the SHA-1 hash of the FULL /Contents value as stored
       // in the PDF, including zero padding - not just the raw CMS bytes.
       // See ETSI EN 319 142-2 and PDF 2.0 spec section 12.8.4.3.
-      const gatherer = new LtvDataGatherer({
-        revocationProvider: resolved.revocationProvider ?? new DefaultRevocationProvider(),
-      });
+      const gatherer = createLtvGatherer(resolved.revocationProvider, resolved.fetch);
       ltvData = await gatherer.gather(hexToBytes(paddedHex));
 
       // Convert gatherer warnings to sign warnings
@@ -268,6 +284,7 @@ export class PDFSignature {
         const docTsLtvData = await this.gatherTimestampLtvData(
           paddedTimestampBytes,
           resolved.revocationProvider,
+          resolved.fetch,
           warnings,
         );
 
@@ -591,6 +608,7 @@ export class PDFSignature {
       const ltvData = await this.gatherTimestampLtvData(
         paddedTimestampBytes,
         options.revocationProvider,
+        options.fetch,
         warnings,
         gatherer,
       );
@@ -637,9 +655,7 @@ export class PDFSignature {
 
     // A single LtvDataGatherer so its OCSP / CRL cache is shared across
     // every signature we process.
-    const gatherer = new LtvDataGatherer({
-      revocationProvider: options.revocationProvider ?? new DefaultRevocationProvider(),
-    });
+    const gatherer = createLtvGatherer(options.revocationProvider, options.fetch);
 
     return this.addValidationDataInternal(gatherer);
   }
@@ -789,9 +805,7 @@ export class PDFSignature {
     // One gatherer for both steps so OCSP/CRL responses fetched for the
     // existing signatures (typically including the same TSA chain the
     // archival timestamp will use) are not re-fetched in step 2.
-    const gatherer = new LtvDataGatherer({
-      revocationProvider: options.revocationProvider ?? new DefaultRevocationProvider(),
-    });
+    const gatherer = createLtvGatherer(options.revocationProvider, options.fetch);
 
     // Step 1: gather LTV for all existing signatures and write one DSS.
     const validation = await this.addValidationDataInternal(gatherer);
@@ -808,6 +822,7 @@ export class PDFSignature {
         fieldName: options.fieldName,
         longTermValidation: true,
         revocationProvider: options.revocationProvider,
+        fetch: options.fetch,
       },
       gatherer,
     );
@@ -914,14 +929,14 @@ export class PDFSignature {
   private async gatherTimestampLtvData(
     timestampToken: Uint8Array,
     revocationProvider: RevocationProvider | undefined,
+    fetchFn: typeof globalThis.fetch | undefined,
     warnings: SignWarning[],
     sharedGatherer?: LtvDataGatherer,
   ): Promise<LtvData | null> {
     // Use LtvDataGatherer - timestamp tokens are just CMS structures
     const gatherer =
       sharedGatherer ??
-      new LtvDataGatherer({
-        revocationProvider: revocationProvider ?? new DefaultRevocationProvider(),
+      createLtvGatherer(revocationProvider, fetchFn, {
         gatherTimestampLtv: false, // Don't recurse for doc timestamps
       });
 
@@ -999,6 +1014,7 @@ export class PDFSignature {
       timestampAuthority: options.timestampAuthority,
       longTermValidation: options.longTermValidation ?? false,
       revocationProvider: options.revocationProvider,
+      fetch: options.fetch,
       archivalTimestamp: options.archivalTimestamp ?? false,
     };
   }

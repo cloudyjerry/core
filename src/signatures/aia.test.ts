@@ -232,4 +232,52 @@ describe("AIA Chain Building", () => {
       ).rejects.toThrow(/Failed to parse issuer certificate/);
     });
   });
+
+  describe("network bounds", () => {
+    /** Headers arrive at once; the body never finishes. */
+    function stallingFetch(): typeof globalThis.fetch {
+      return (async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new Uint8Array([0x30]));
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/pkix-cert" } },
+        )) as unknown as typeof globalThis.fetch;
+    }
+
+    it("rejects within the timeout when the issuer body stalls after headers", async () => {
+      const leafCert = await loadRealCert("github-0.der");
+      const started = Date.now();
+
+      await expect(
+        buildCertificateChain(leafCert, { fetch: stallingFetch(), timeout: 100 }),
+      ).rejects.toThrow(/Failed to fetch issuer certificate .*: Request timed out after 100ms/);
+
+      expect(Date.now() - started).toBeLessThan(2000);
+    });
+
+    it("rejects an issuer certificate body larger than 1 MB", async () => {
+      const leafCert = await loadRealCert("github-0.der");
+      const issuerCert = await loadRealCert("github-1.der");
+
+      // A real certificate followed by padding: parseable, but over the cap.
+      const oversized = new Uint8Array(1024 * 1024 + 1);
+      oversized.set(issuerCert);
+
+      const mockFetch = async () =>
+        new Response(oversized, {
+          status: 200,
+          headers: { "Content-Type": "application/pkix-cert" },
+        });
+
+      await expect(
+        buildCertificateChain(leafCert, {
+          fetch: mockFetch as unknown as typeof globalThis.fetch,
+          maxChainLength: 1,
+        }),
+      ).rejects.toThrow(/exceeds 1048576 bytes/);
+    });
+  });
 });

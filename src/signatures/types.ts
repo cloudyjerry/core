@@ -225,6 +225,18 @@ export interface SignOptions {
   /** Provider for OCSP/CRL data */
   revocationProvider?: RevocationProvider;
 
+  /**
+   * Custom fetch implementation for the network requests LibPDF makes itself
+   * while gathering long-term validation data: AIA issuer certificates, and
+   * OCSP/CRL requests when no `revocationProvider` is given.
+   *
+   * Use it to add a deadline, auth, a proxy or logging. Not used for the
+   * timestamp request; pass `fetch` to `HttpTimestampAuthority` for that.
+   *
+   * @default globalThis.fetch
+   */
+  fetch?: typeof globalThis.fetch;
+
   /** Add document timestamp for archival (B-LTA) */
   archivalTimestamp?: boolean;
 
@@ -303,6 +315,18 @@ export interface TimestampOptions {
   revocationProvider?: RevocationProvider;
 
   /**
+   * Custom fetch implementation for the network requests LibPDF makes itself
+   * while gathering long-term validation data: AIA issuer certificates, and
+   * OCSP/CRL requests when no `revocationProvider` is given.
+   *
+   * Use it to add a deadline, auth, a proxy or logging. Not used for the
+   * timestamp request; pass `fetch` to `HttpTimestampAuthority` for that.
+   *
+   * @default globalThis.fetch
+   */
+  fetch?: typeof globalThis.fetch;
+
+  /**
    * Digest algorithm used to hash the document for the TSA request.
    *
    * @default "SHA-256"
@@ -352,6 +376,18 @@ export interface ValidationDataOptions {
    * @default new DefaultRevocationProvider()
    */
   revocationProvider?: RevocationProvider;
+
+  /**
+   * Custom fetch implementation for the network requests LibPDF makes itself
+   * while gathering long-term validation data: AIA issuer certificates, and
+   * OCSP/CRL requests when no `revocationProvider` is given.
+   *
+   * Use it to add a deadline, auth, a proxy or logging. Not used for the
+   * timestamp request; pass `fetch` to `HttpTimestampAuthority` for that.
+   *
+   * @default globalThis.fetch
+   */
+  fetch?: typeof globalThis.fetch;
 }
 
 /**

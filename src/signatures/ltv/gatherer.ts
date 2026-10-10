@@ -72,7 +72,7 @@ export interface LtvGathererOptions {
   /** Whether to recursively gather LTV for embedded timestamps (default: true) */
   gatherTimestampLtv?: boolean;
 
-  /** Custom fetch implementation for testing */
+  /** Custom fetch implementation, used for AIA issuer certificate fetches */
   fetch?: typeof globalThis.fetch;
 }
 

@@ -13,6 +13,7 @@ import * as pkijs from "pkijs";
 
 import { toArrayBuffer } from "../helpers/buffer";
 import { getCrypto } from "./crypto";
+import { fetchBytes, HttpStatusError, MAX_CRL_BYTES, MAX_OCSP_RESPONSE_BYTES } from "./http";
 import {
   OID_AD_OCSP,
   OID_AUTHORITY_INFO_ACCESS,
@@ -27,7 +28,8 @@ import { RevocationError } from "./types";
  */
 export interface DefaultRevocationProviderOptions {
   /**
-   * Request timeout in milliseconds.
+   * Timeout for each OCSP/CRL request in milliseconds, covering the whole
+   * request including reading the response body.
    * @default 15000
    */
   timeout?: number;
@@ -304,45 +306,44 @@ export class DefaultRevocationProvider implements RevocationProvider {
 
   /**
    * Send OCSP request and get response.
+   *
+   * The timeout covers the whole request including the body read, and the
+   * body is capped at {@link MAX_OCSP_RESPONSE_BYTES}.
    */
   private async sendOcspRequest(url: string, request: Uint8Array): Promise<Uint8Array> {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+    let ocspResponse: Uint8Array;
 
     try {
       // Try POST first (preferred)
-      const response = await this.fetchFn(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/ocsp-request",
-          Accept: "application/ocsp-response",
+      ocspResponse = await fetchBytes(
+        this.fetchFn,
+        url,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/ocsp-request",
+            Accept: "application/ocsp-response",
+          },
+          body: request,
         },
-        body: request,
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        throw new RevocationError(`OCSP request failed: HTTP ${response.status}`);
-      }
-
-      const data = await response.arrayBuffer();
-      const ocspResponse = new Uint8Array(data);
-
-      // Validate OCSP response status
-      // OCSPResponse ::= SEQUENCE { responseStatus OCSPResponseStatus, ... }
-      // OCSPResponseStatus: 0=successful, 1=malformed, 2=internalError, 3=tryLater, 5=sigRequired, 6=unauthorized
-      if (!this.isOcspResponseSuccessful(ocspResponse)) {
-        throw new RevocationError(`OCSP response status is not successful`);
-      }
-
-      return ocspResponse;
+        { timeout: this.timeout, maxBytes: MAX_OCSP_RESPONSE_BYTES },
+      );
     } catch (error) {
-      clearTimeout(timeoutId);
+      if (error instanceof HttpStatusError) {
+        throw new RevocationError(`OCSP request failed: HTTP ${error.status}`);
+      }
 
       throw error;
     }
+
+    // Validate OCSP response status
+    // OCSPResponse ::= SEQUENCE { responseStatus OCSPResponseStatus, ... }
+    // OCSPResponseStatus: 0=successful, 1=malformed, 2=internalError, 3=tryLater, 5=sigRequired, 6=unauthorized
+    if (!this.isOcspResponseSuccessful(ocspResponse)) {
+      throw new RevocationError(`OCSP response status is not successful`);
+    }
+
+    return ocspResponse;
   }
 
   /**
@@ -387,32 +388,24 @@ export class DefaultRevocationProvider implements RevocationProvider {
 
   /**
    * Fetch a CRL from URL.
+   *
+   * The timeout covers the whole request including the body read, and the
+   * body is capped at {@link MAX_CRL_BYTES}.
    */
   private async fetchCrl(url: string): Promise<Uint8Array | null> {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
-
     try {
-      const response = await this.fetchFn(url, {
-        method: "GET",
-        headers: {
-          Accept: "application/pkix-crl, application/x-pkcs7-crl",
+      return await fetchBytes(
+        this.fetchFn,
+        url,
+        {
+          method: "GET",
+          headers: {
+            Accept: "application/pkix-crl, application/x-pkcs7-crl",
+          },
         },
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        return null;
-      }
-
-      const data = await response.arrayBuffer();
-
-      return new Uint8Array(data);
+        { timeout: this.timeout, maxBytes: MAX_CRL_BYTES },
+      );
     } catch {
-      clearTimeout(timeoutId);
-
       return null;
     }
   }

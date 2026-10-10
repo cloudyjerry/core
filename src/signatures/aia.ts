@@ -11,6 +11,7 @@ import { bytesToHex, toArrayBuffer } from "#src/helpers/buffer.ts";
 import { fromBER } from "asn1js";
 import * as pkijs from "pkijs";
 
+import { fetchBytes, MAX_CERTIFICATE_BYTES } from "./http";
 import { OID_AD_CA_ISSUERS, OID_AUTHORITY_INFO_ACCESS } from "./oids";
 import { CertificateChainError } from "./types";
 
@@ -26,7 +27,8 @@ export interface AiaChainBuilderOptions {
   maxChainLength?: number;
 
   /**
-   * Request timeout in milliseconds.
+   * Timeout for each certificate request in milliseconds, covering the
+   * whole request including reading the response body.
    * @default 15000
    */
   timeout?: number;
@@ -241,40 +243,24 @@ function getCaIssuersUrl(cert: pkijs.Certificate): string | null {
 
 /**
  * Fetch a certificate from URL.
+ *
+ * The timeout covers the whole request including the body read, and the
+ * body is capped at {@link MAX_CERTIFICATE_BYTES}.
  */
 async function fetchCertificate(
   url: string,
   fetchFn: typeof globalThis.fetch,
   timeout: number,
 ): Promise<Uint8Array> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeout);
-
-  try {
-    const response = await fetchFn(url, {
+  return fetchBytes(
+    fetchFn,
+    url,
+    {
       method: "GET",
       headers: {
         Accept: "application/pkix-cert, application/x-x509-ca-cert",
       },
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status} ${response.statusText}`);
-    }
-
-    const data = await response.arrayBuffer();
-
-    return new Uint8Array(data);
-  } catch (error) {
-    clearTimeout(timeoutId);
-
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new Error(`Request timed out after ${timeout}ms`, { cause: error });
-    }
-
-    throw error;
-  }
+    },
+    { timeout, maxBytes: MAX_CERTIFICATE_BYTES },
+  );
 }
